@@ -1,0 +1,5 @@
+{
+  "name": "Solana Copy Trader",
+  "description": "An application to automatically copy trades from a specified Solana wallet. It watches a \"whale\" wallet and executes similar trades for the user. Includes a feature to wait for a token's price to drop to the whale's entry price before starting to copy trades.",
+  "requestFramePermissions": []
+}
