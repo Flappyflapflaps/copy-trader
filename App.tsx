@@ -16,6 +16,8 @@ const initialState: BotState = {
   privateKey: '',
   walletToWatch: 'HdxkiXqeN6qpK2YbG51W23QSWj3Yygc1eEk2zwmKJExp',
   tokenToWatch: '',
+  tradeSizeSol: '0.01',
+  slippageBps: 50, // 0.5%
   status: 'idle',
   message: 'Enter your details, then start the bot to watch for a good entry price.',
   entryPrice: null,
@@ -242,18 +244,23 @@ export default function App() {
           if (isTrade) {
               updateState({ status: 'copying', message: `Whale trade detected! Signature: ${logs.signature}. Preparing to copy...` });
               try {
-                  const tradeAmountLamports = 10000000; // 0.01 SOL
+                  const tradeAmountSol = parseFloat(botState.tradeSizeSol);
+                  if (isNaN(tradeAmountSol) || tradeAmountSol <= 0) {
+                      throw new Error('Invalid trade size.');
+                  }
+                  const tradeAmountLamports = tradeAmountSol * 1e9; // Convert SOL to lamports
+
                   const inputMint = isBuy ? new PublicKey(SOL_MINT_ADDRESS) : new PublicKey(botState.tokenToWatch);
                   const outputMint = isBuy ? new PublicKey(botState.tokenToWatch) : new PublicKey(SOL_MINT_ADDRESS);
                   
-                  const swapTx = await getJupiterSwapTx(userKeypair.publicKey, inputMint, outputMint, tradeAmountLamports);
+                  const swapTx = await getJupiterSwapTx(userKeypair.publicKey, inputMint, outputMint, tradeAmountLamports, botState.slippageBps);
                   
                   const swapTxByteString = atob(swapTx);
                   const swapTxBuf = Uint8Array.from(swapTxByteString, (c) => c.charCodeAt(0));
                   const transaction = VersionedTransaction.deserialize(swapTxBuf);
                   transaction.sign([userKeypair]);
                   
-                  const signature = await connection.sendTransaction(transaction, { skipPreflight: true });
+                  const signature = await connection.sendTransaction(transaction);
                   updateState({ status: 'copying', message: `Copy trade sent! Signature: ${signature}. Confirming...` });
                   
                   const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
@@ -277,7 +284,7 @@ export default function App() {
       if (subscriptionId) connection.removeOnLogsListener(subscriptionId);
       if (priceWatchIntervalId) clearInterval(priceWatchIntervalId);
     };
-  }, [botState.isBotActive, connection, userKeypair, botState.walletToWatch, botState.tokenToWatch, botState.entryPrice, botState.readyForCopying, updateState]);
+  }, [botState.isBotActive, connection, userKeypair, botState.walletToWatch, botState.tokenToWatch, botState.entryPrice, botState.readyForCopying, updateState, botState.tradeSizeSol, botState.slippageBps]);
 
   // --- Wallet Management Handlers ---
 
@@ -342,7 +349,7 @@ export default function App() {
     }
   };
   
-  const isFormInvalid = !botState.rpcUrl || !botState.privateKey || !botState.walletToWatch || !botState.tokenToWatch;
+  const isFormInvalid = !botState.rpcUrl || !botState.privateKey || !botState.walletToWatch || !botState.tokenToWatch || !botState.tradeSizeSol || parseFloat(botState.tradeSizeSol) <= 0;
 
   return (
     <div className="min-h-screen bg-slate-950 text-white font-sans flex flex-col items-center justify-center p-4">
@@ -373,6 +380,33 @@ export default function App() {
 
           <InputField label="Whale Wallet to Watch" value={botState.walletToWatch} onChange={e => updateState({ walletToWatch: e.target.value })} placeholder="Enter public key of wallet to copy" disabled={botState.isBotActive} icon={ICONS.wallet} />
           <InputField label="Token to Trade" value={botState.tokenToWatch} onChange={e => updateState({ tokenToWatch: e.target.value })} placeholder="Enter token mint address" disabled={botState.isBotActive} icon={ICONS.token} />
+        </div>
+
+        <div className="border-t border-slate-800 pt-4 space-y-4">
+            <h2 className="text-lg font-semibold text-slate-200 text-center">Trade Settings</h2>
+            <div className="grid grid-cols-2 gap-4">
+                <InputField
+                    label="Trade Size (SOL)"
+                    value={botState.tradeSizeSol}
+                    onChange={e => updateState({ tradeSizeSol: e.target.value })}
+                    placeholder="e.g., 0.1"
+                    type="number"
+                    disabled={botState.isBotActive}
+                />
+                <InputField
+                    label="Slippage (%)"
+                    value={(botState.slippageBps / 100).toString()}
+                    onChange={e => {
+                        const percentage = parseFloat(e.target.value);
+                        if (!isNaN(percentage)) {
+                            updateState({ slippageBps: percentage * 100 });
+                        }
+                    }}
+                    placeholder="e.g., 0.5"
+                    type="number"
+                    disabled={botState.isBotActive}
+                />
+            </div>
         </div>
 
         <div className="flex flex-col space-y-4 pt-2">

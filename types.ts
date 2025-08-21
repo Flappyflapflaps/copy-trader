@@ -16,4 +16,6 @@ export interface BotState {
   isBotActive: boolean;
   readyForCopying: boolean;
   savedWallets: WalletEntry[];
+  tradeSizeSol: string;
+  slippageBps: number;
 }

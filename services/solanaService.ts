@@ -54,7 +54,6 @@ export async function sendAndConfirmTransaction(connection: Connection, serializ
   const transaction = VersionedTransaction.deserialize(transactionBuffer);
   
   const signature = await connection.sendTransaction(transaction, {
-    skipPreflight: true,
     maxRetries: 3,
   });
 
@@ -73,7 +72,7 @@ export async function sendAndConfirmTransaction(connection: Connection, serializ
 
 export async function fetchWhaleEntryPrice(connection: Connection, whaleWallet: string, tokenMint: string): Promise<number | null> {
   const whalePubKey = new PublicKey(whaleWallet);
-  const signatures = await connection.getSignaturesForAddress(whalePubKey, { limit: 25 });
+  const signatures = await connection.getSignaturesForAddress(whalePubKey, { limit: 75 });
 
   if (signatures.length === 0) {
     throw new Error('No transactions found for the whale wallet.');

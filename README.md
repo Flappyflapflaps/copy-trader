@@ -15,7 +15,8 @@ View your app in AI Studio: https://ai.studio/apps/drive/12WWQAaAwXzVpblCpZ4DbhU
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
+2. Copy the `.env.example` file to a new file named `.env`.
+3. Open the `.env` file and set the `VITE_HELIUS_API_KEY` to your Helius API key. You can get a free key from [Helius](https://helius.dev/).
+4. Run the app:
    `npm run dev`
 # copy-trader
