@@ -2,9 +2,9 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Connection, PublicKey, Keypair, VersionedTransaction } from '@solana/web3.js';
 import { authenticateUser, saveState, syncState, onAuthChange } from './services/storageService';
-import { createConnection, parsePrivateKey, fetchWhaleEntryPrice, isWhaleTrade } from './services/solanaService';
+import { createConnection, parsePrivateKey, fetchWhaleEntryPrice, isWhaleTrade, getTokenBalance, fetchRecentBuys } from './services/solanaService';
 import { getJupiterPrice, getJupiterSwapTx } from './services/jupiterService';
-import type { BotState, BotStatus, WalletEntry } from './types';
+import type { BotState, BotStatus, WalletEntry, RecentBuy } from './types';
 import { ICONS, SOL_MINT_ADDRESS } from './constants';
 import { ChevronDown, PlusCircle, Trash2, KeyRound, AlertTriangle } from 'lucide-react';
 
@@ -24,6 +24,9 @@ const initialState: BotState = {
   isBotActive: false,
   readyForCopying: false,
   savedWallets: [],
+  copySells: true,
+  priorityFee: 10000, // 0.00001 SOL
+  recentBuys: [],
 };
 
 // --- UI Components ---
@@ -161,6 +164,28 @@ const WalletManager: React.FC<WalletManagerProps> = ({ wallets, onAdd, onApply, 
     );
 };
 
+const RecentPurchasesPanel: React.FC<{ buys: RecentBuy[] }> = ({ buys }) => (
+    <div className="border-t border-slate-800 pt-4 space-y-2">
+        <h2 className="text-lg font-semibold text-slate-200 text-center">Whale's Recent Buys</h2>
+        {buys.length === 0 ? (
+            <p className="text-sm text-slate-500 text-center py-4">No recent buy transactions found.</p>
+        ) : (
+            <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
+                {buys.map((buy) => (
+                    <div key={buy.signature} className="bg-slate-800/50 p-2 rounded-lg text-xs">
+                        <div className="flex justify-between items-center">
+                            <span className="font-bold text-indigo-400">{buy.tokenSymbol || 'Unknown Token'}</span>
+                            <span className="font-mono bg-slate-900 px-1.5 py-0.5 rounded">{buy.solAmount.toFixed(4)} SOL</span>
+                        </div>
+                        <p className="text-slate-400 truncate">Mint: <a href={`https://solscan.io/token/${buy.tokenMint}`} target="_blank" className="hover:underline">{buy.tokenMint}</a></p>
+                        <p className="text-slate-500">{new Date(buy.timestamp * 1000).toLocaleString()}</p>
+                    </div>
+                ))}
+            </div>
+        )}
+    </div>
+);
+
 
 // --- Main App Component ---
 
@@ -239,21 +264,40 @@ export default function App() {
           const tx = await connection.getParsedTransaction(logs.signature, { maxSupportedTransactionVersion: 0 });
           if (!tx) return;
 
-          const { isTrade, isBuy } = isWhaleTrade(tx, botState.walletToWatch, botState.tokenToWatch);
+          const { isTrade, isBuy, isSell } = isWhaleTrade(tx, botState.walletToWatch, botState.tokenToWatch);
 
           if (isTrade) {
-              updateState({ status: 'copying', message: `Whale trade detected! Signature: ${logs.signature}. Preparing to copy...` });
-              try {
-                  const tradeAmountSol = parseFloat(botState.tradeSizeSol);
-                  if (isNaN(tradeAmountSol) || tradeAmountSol <= 0) {
-                      throw new Error('Invalid trade size.');
-                  }
-                  const tradeAmountLamports = tradeAmountSol * 1e9; // Convert SOL to lamports
+              if (isSell && !botState.copySells) {
+                  updateState({ message: `Whale sell detected, but copy sells is disabled. Ignoring.` });
+                  return;
+              }
 
-                  const inputMint = isBuy ? new PublicKey(SOL_MINT_ADDRESS) : new PublicKey(botState.tokenToWatch);
-                  const outputMint = isBuy ? new PublicKey(botState.tokenToWatch) : new PublicKey(SOL_MINT_ADDRESS);
-                  
-                  const swapTx = await getJupiterSwapTx(userKeypair.publicKey, inputMint, outputMint, tradeAmountLamports, botState.slippageBps);
+              updateState({ status: 'copying', message: `Whale ${isBuy ? 'buy' : 'sell'} detected! Signature: ${logs.signature}. Preparing to copy...` });
+
+              try {
+                  let inputMint, outputMint, tradeAmountLamports;
+
+                  if (isBuy) {
+                      const tradeAmountSol = parseFloat(botState.tradeSizeSol);
+                      if (isNaN(tradeAmountSol) || tradeAmountSol <= 0) {
+                          throw new Error('Invalid trade size.');
+                      }
+                      tradeAmountLamports = tradeAmountSol * 1e9;
+                      inputMint = new PublicKey(SOL_MINT_ADDRESS);
+                      outputMint = new PublicKey(botState.tokenToWatch);
+                  } else { // It's a sell
+                      const tokenToSell = new PublicKey(botState.tokenToWatch);
+                      const balance = await getTokenBalance(connection, userKeypair.publicKey, tokenToSell);
+                      if (balance.lamports === BigInt(0)) {
+                          updateState({ status: 'watching', message: 'Whale sold, but you have no tokens to sell. Resuming watch.' });
+                          return;
+                      }
+                      tradeAmountLamports = Number(balance.lamports);
+                      inputMint = tokenToSell;
+                      outputMint = new PublicKey(SOL_MINT_ADDRESS);
+                  }
+
+                  const swapTx = await getJupiterSwapTx(userKeypair.publicKey, inputMint, outputMint, tradeAmountLamports, botState.slippageBps, botState.priorityFee);
                   
                   const swapTxByteString = atob(swapTx);
                   const swapTxBuf = Uint8Array.from(swapTxByteString, (c) => c.charCodeAt(0));
@@ -284,7 +328,26 @@ export default function App() {
       if (subscriptionId) connection.removeOnLogsListener(subscriptionId);
       if (priceWatchIntervalId) clearInterval(priceWatchIntervalId);
     };
-  }, [botState.isBotActive, connection, userKeypair, botState.walletToWatch, botState.tokenToWatch, botState.entryPrice, botState.readyForCopying, updateState, botState.tradeSizeSol, botState.slippageBps]);
+  }, [botState.isBotActive, connection, userKeypair, botState.walletToWatch, botState.tokenToWatch, botState.entryPrice, botState.readyForCopying, updateState, botState.tradeSizeSol, botState.slippageBps, botState.copySells, botState.priorityFee]);
+
+  // 4. Fetch Recent Buys periodically
+  useEffect(() => {
+    if (!botState.walletToWatch || !connection) return;
+
+    const fetchAndSetBuys = async () => {
+        try {
+            const buys = await fetchRecentBuys(connection, botState.rpcUrl, botState.walletToWatch);
+            updateState({ recentBuys: buys });
+        } catch (error) {
+            console.error("Failed to fetch recent buys:", error);
+        }
+    };
+
+    fetchAndSetBuys(); // Initial fetch
+    const intervalId = setInterval(fetchAndSetBuys, 60000); // Fetch every 60 seconds
+
+    return () => clearInterval(intervalId);
+  }, [connection, botState.walletToWatch, botState.rpcUrl]);
 
   // --- Wallet Management Handlers ---
 
@@ -409,6 +472,37 @@ export default function App() {
             </div>
         </div>
 
+        <div className="border-t border-slate-800 pt-4 space-y-4">
+            <h2 className="text-lg font-semibold text-slate-200 text-center">Advanced Settings</h2>
+            <div className="grid grid-cols-2 gap-4">
+                <InputField
+                    label="Priority Fee (Lamports)"
+                    value={botState.priorityFee.toString()}
+                    onChange={e => {
+                        const fee = parseInt(e.target.value, 10);
+                        if (!isNaN(fee)) {
+                            updateState({ priorityFee: fee });
+                        }
+                    }}
+                    placeholder="e.g., 10000"
+                    type="number"
+                    disabled={botState.isBotActive}
+                />
+                <div className="flex items-center justify-center">
+                    <label className="flex items-center space-x-2 cursor-pointer">
+                        <input
+                            type="checkbox"
+                            className="h-4 w-4 rounded bg-slate-700 border-slate-600 text-indigo-500 focus:ring-indigo-500"
+                            checked={botState.copySells}
+                            onChange={e => updateState({ copySells: e.target.checked })}
+                            disabled={botState.isBotActive}
+                        />
+                        <span className="text-sm font-semibold text-slate-300">Copy Sells</span>
+                    </label>
+                </div>
+            </div>
+        </div>
+
         <div className="flex flex-col space-y-4 pt-2">
           <button
             onClick={botState.isBotActive ? handleStopBot : handleStartBot}
@@ -426,6 +520,8 @@ export default function App() {
             )}
           </button>
         </div>
+        <RecentPurchasesPanel buys={botState.recentBuys} />
+
          <p className="text-xs text-center text-slate-600 pt-2">
           Disclaimer: This is a high-risk tool. Use with caution and at your own risk. Never share your private key.
         </p>

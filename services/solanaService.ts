@@ -130,3 +130,88 @@ export function isWhaleTrade(tx: ParsedTransactionWithMeta, whaleWallet: string,
 
     return { isTrade: isBuy || isSell, isBuy, isSell };
 }
+
+// --- Balance Checking ---
+
+export async function getTokenBalance(connection: Connection, owner: PublicKey, tokenMint: PublicKey): Promise<{ lamports: bigint, decimals: number }> {
+    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(owner, { mint: tokenMint });
+    if (tokenAccounts.value.length === 0) {
+        return { lamports: BigInt(0), decimals: 0 }; // Assume 0 if no account found
+    }
+    const tokenAccountInfo = tokenAccounts.value[0].account.data.parsed.info;
+    return {
+        lamports: BigInt(tokenAccountInfo.tokenAmount.amount),
+        decimals: tokenAccountInfo.tokenAmount.decimals,
+    };
+}
+
+// --- Helius API for Metadata ---
+
+async function getTokenMetadata(rpcUrl: string, mintAddress: string): Promise<{ symbol: string } | null> {
+    if (!rpcUrl.includes('helius')) return null; // Only works with Helius RPC
+    try {
+        const response = await fetch(rpcUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                jsonrpc: '2.0',
+                id: 'text-id',
+                method: 'getAsset',
+                params: { id: mintAddress },
+            }),
+        });
+        const { result } = await response.json();
+        return { symbol: result.content?.metadata?.symbol || 'N/A' };
+    } catch (error) {
+        console.error("Failed to fetch token metadata:", error);
+        return null;
+    }
+}
+
+
+export async function fetchRecentBuys(connection: Connection, rpcUrl: string, whaleWallet: string): Promise<any[]> {
+    const whalePubKey = new PublicKey(whaleWallet);
+    const signatures = await connection.getSignaturesForAddress(whalePubKey, { limit: 100 });
+
+    if (signatures.length === 0) return [];
+
+    const transactions = await connection.getParsedTransactions(signatures.map(s => s.signature), {
+        maxSupportedTransactionVersion: 0,
+        commitment: 'confirmed'
+    });
+
+    const buys = [];
+    for (const tx of transactions) {
+        if (buys.length >= 10) break;
+        if (!tx || tx.meta?.err) continue;
+
+        const whaleIndex = tx.transaction.message.accountKeys.findIndex(acc => acc.pubkey.equals(whalePubKey));
+        if (whaleIndex === -1) continue;
+
+        const preSol = tx.meta.preBalances[whaleIndex];
+        const postSol = tx.meta.postBalances[whaleIndex];
+        const solChange = (postSol - preSol) / 1e9;
+
+        if (solChange >= 0) continue; // Not a buy if SOL didn't decrease
+
+        for (const tb of tx.meta.postTokenBalances || []) {
+            if (tb.owner === whaleWallet) {
+                const preBalance = tx.meta.preTokenBalances?.find(pre => pre.mint === tb.mint && pre.owner === whaleWallet)?.uiTokenAmount.uiAmount ?? 0;
+                if (tb.uiTokenAmount.uiAmount > preBalance) {
+                     // It's a buy of this token
+                    const metadata = await getTokenMetadata(rpcUrl, tb.mint);
+                    buys.push({
+                        signature: tx.transaction.signatures[0],
+                        timestamp: tx.blockTime,
+                        tokenMint: tb.mint,
+                        solAmount: Math.abs(solChange),
+                        tokenSymbol: metadata?.symbol,
+                    });
+                    // Break inner loop to not double-count buys in complex swaps
+                    break;
+                }
+            }
+        }
+    }
+    return buys;
+}

@@ -5,6 +5,14 @@ export interface WalletEntry {
   privateKey: string;
 }
 
+export interface RecentBuy {
+  signature: string;
+  timestamp: number;
+  tokenMint: string;
+  solAmount: number;
+  tokenSymbol?: string;
+}
+
 export interface BotState {
   rpcUrl: string;
   privateKey: string;
@@ -18,4 +26,7 @@ export interface BotState {
   savedWallets: WalletEntry[];
   tradeSizeSol: string;
   slippageBps: number;
+  copySells: boolean;
+  priorityFee: number;
+  recentBuys: RecentBuy[];
 }

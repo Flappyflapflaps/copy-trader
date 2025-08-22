@@ -34,7 +34,8 @@ export async function getJupiterSwapTx(
   inputMint: PublicKey,
   outputMint: PublicKey,
   amount: number, // amount in lamports
-  slippageBps: number = 50 // 0.5%
+  slippageBps: number = 50, // 0.5%
+  prioritizationFeeLamports: number = 0
 ): Promise<string> {
     
   // 1. Get a quote
@@ -54,8 +55,7 @@ export async function getJupiterSwapTx(
       quoteResponse: quoteData,
       userPublicKey: userPublicKey.toBase58(),
       wrapAndUnwrapSol: true,
-      // Optional: Add priority fee here if needed
-      // prioritizationFeeLamports: 10000 
+      prioritizationFeeLamports,
     }),
   });
   
